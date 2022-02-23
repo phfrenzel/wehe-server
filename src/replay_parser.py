@@ -64,8 +64,8 @@ DEBUG = 2
 
 ipIgnoreList = ['17.0.0.0/8']   #Apple ip range --> see it a lot when recording on iPhone/iPad
 
-def getUDPstreamsMap(pcap_file, client_ip):
-    command = 'tshark -r ' + pcap_file + ' -2 -R "udp" -T fields -e ip.src -e udp.srcport -e ip.dst -e udp.dstport > tmp'
+def getUDPstreamsMap(pcap_file, client_ips):
+    command = 'tshark -r ' + pcap_file + " -2 -R 'udp && not icmp && not ntp' -T fields -e ip.src -e ipv6.src -e udp.srcport -e ip.dst -e ipv6.dst -e udp.dstport > tmp"
     os.system(command)
     streams = set()
     with open('tmp', 'r') as f:
@@ -73,24 +73,26 @@ def getUDPstreamsMap(pcap_file, client_ip):
             l = l.strip().split()
             
             if len(l) != 4:
+                print 'getUDPstreamsMap continuing because len != 4'
                 continue
-            
-            if client_ip == l[0]:
+
+            if l[0] in client_ips:
                 p1 = ':'.join(l[:2])
                 p2 = ':'.join(l[2:])
-            elif client_ip == l[2]:
+            elif l[2] in client_ips:
                 p1 = ':'.join(l[2:])
                 p2 = ':'.join(l[:2])
             else:
+                print 'getUDPstreamsMap: skipping packet not sent from/to client', l[0], l[2]
                 continue    
-            streams.add(p1+','+p2)
+            streams.add(p1+'-'+p2)
     os.system('rm tmp')
     return streams
 
 def createPacketMeta(pcapFile, outFile):
     command = ' '.join(['tshark -r', pcapFile, 
 #                         '-2 -R "not tcp.analysis.retransmission"',
-                        '-2 -R "not tcp.analysis.retransmission && not tcp.analysis.out_of_order"',
+                        '-2 -R "not tcp.analysis.retransmission && not tcp.analysis.out_of_order && not icmp && not ntp"',
                         '-T fields', 
                         '-e frame.number', '-e frame.protocols', '-e frame.time_relative', 
                         '-e tcp.stream'  , '-e udp.stream'     , 
@@ -98,6 +100,7 @@ def createPacketMeta(pcapFile, outFile):
                         '-e ip.dst'      , '-e tcp.dstport'    , '-e udp.dstport'        ,
                         '-e tcp.len'     , '-e udp.length'     ,
                         '-e tcp.seq'     , '-e tcp.nxtseq'     , 
+                        '-e ipv6.src'    , '-e ipv6.dst'       ,
                         '> ', outFile])
     os.system(command)
 
@@ -110,21 +113,21 @@ def mapUDPstream2csp(packetMeta, clientIP):
                 continue
             else:
                 streamNo = l[4]
-                srcIP    = l[5]
+                srcIP    = l[5] or l[15]
                 srcPort  = l[7]
-                dstIP    = l[8]
+                dstIP    = l[8] or l[16]
                 dstPort  = l[10]
-                if srcIP != clientIP:
+                if srcIP not in clientIP:
                     continue
                 else:
-                    csp = convert_ip(srcIP+'.'+srcPort) + '.' + convert_ip(dstIP+'.'+dstPort)
+                    csp = convert_ip(srcIP+'.'+srcPort) + '-' + convert_ip(dstIP+'.'+dstPort)
                     if csp in streams:
                         assert(streams[csp] == streamNo)
                     else:
                         streams[csp] = streamNo
     return streams
 
-def extractStreams(pcap_file, follow_folder, client_ip, protocol, UDPstreamsMap=None):
+def extractStreams(pcap_file, follow_folder, client_ips, protocol, UDPstreamsMap=None):
     '''
     For every TCP/UDP flow, it makes a separate text file with hex payloads.
     
@@ -134,7 +137,7 @@ def extractStreams(pcap_file, follow_folder, client_ip, protocol, UDPstreamsMap=
     
     noRetransmitPcap = pcap_file.rpartition('.')[0]+'_no_retransmits.pcap'
 #     command          = 'tshark -2 -R "not tcp.analysis.retransmission" -r {} -w {}'.format(pcap_file, noRetransmitPcap)
-    command          = 'tshark -2 -R "not tcp.analysis.retransmission && not tcp.analysis.out_of_order" -r {} -w {}'.format(pcap_file, noRetransmitPcap)
+    command          = 'tshark -2 -R "not tcp.analysis.retransmission && not tcp.analysis.out_of_order && not icmp && not ntp" -r {} -w {}'.format(pcap_file, noRetransmitPcap)
     os.system(command)
     
     if protocol == 'tcp':
@@ -143,8 +146,7 @@ def extractStreams(pcap_file, follow_folder, client_ip, protocol, UDPstreamsMap=
                    "follow_folder='" + follow_folder + "'\n" +
                    "END=$(tshark -r $PCAP_FILE_noRe -T fields -e " + protocol + ".stream | sort -n | tail -1)\n" +
                    "echo '\tNumber of streams: '$END+1\n\n" +
-                   "for ((i=0;i<=END;i++))\n" +
-                   "do\n" +
+                   "for i in $(seq 0 $END); do"
                     "\techo '\tDoing TCP stream: '$i\n" +
                     "\ttshark -r $PCAP_FILE_noRe -qz follow," + protocol + ",raw,$i > $follow_folder/follow-stream-$i.txt\n" +
                    "done"
@@ -152,18 +154,24 @@ def extractStreams(pcap_file, follow_folder, client_ip, protocol, UDPstreamsMap=
         os.system(command)
         
     elif protocol == 'udp':
-        streams = getUDPstreamsMap(pcap_file, client_ip)
+        streams = getUDPstreamsMap(pcap_file, client_ips)
         for s in streams:
-            csp = convert_ip(s.replace(':', '.').split(',')[0]) + '.' + convert_ip(s.replace(':', '.').split(',')[1])
+            client = s.split('-')[0]
+            # replaces the last occurrence of ':' with '.'
+            client = '.'.join(client.rsplit(':', 1))
+            server = s.split('-')[1]
+            # replaces the last occurrence of ':' with '.'
+            server = '.'.join(server.rsplit(':', 1))
+            csp = convert_ip(client) + '-' + convert_ip(server)
             
-            if isPrivate(csp[:15]) and isPrivate(csp[22:-6]):
+            if isPrivate(csp[:csp.index('-')-6]) and isPrivate(csp[csp.index('-')+1:-6]):
                 print '\t\tIS LOCAL!!! Skipping:', csp
                 continue
 
             filename = UDPstreamsMap[csp]
             print '\tDoing UDP stream:', filename
             
-            command = "tshark -r " + pcap_file + " -qz follow," + protocol + ",raw,"+ s + ' > ' + follow_folder + '/follow-stream-' + filename +'.txt'
+            command = "tshark -r " + pcap_file + " -qz follow," + protocol + ",raw,"+ s.replace('-', ',') + ' > ' + follow_folder + '/follow-stream-' + filename +'.txt'
             os.system(command)
 
 def readPayload(streamFile):
@@ -273,6 +281,7 @@ def sortAndClean(tcpMetas):
                     if x.NXseq == lastOne.NXseq:
                         continue
                     else:
+                        print 'Overlapping retransmission'
                         new_x = copy.deepcopy(x)
                         new_x.length =  x.length - lastOne.length
                         new_tcpMetas[stream][talker].append(new_x)
@@ -492,6 +501,7 @@ def tcpStream2Qs(streamMeta, streamHandle):
     '''
     for i in range(1, len(clientQ)):
         if clientQ[i].timestamp < clientQ[i-1].timestamp:
+            print 'tcpStream2Qs() reordering packets'
             clientQ[i].timestamp = clientQ[i-1].timestamp
 
     return clientQ, serverQ, pp.csp
@@ -529,8 +539,8 @@ class singlePacket(object):
     def __init__(self, desString, clientIP):
         l              = desString.replace('\n', '').split('\t')
         self.timestamp = float(l[2])
-        self.srcIP     = l[5]
-        self.dstIP     = l[8]
+        self.srcIP     = l[5] or l[15]
+        self.dstIP     = l[8] or l[16]
         self.payload   = None
         self.talking   = None
         self.stream    = None
@@ -539,6 +549,8 @@ class singlePacket(object):
             self.protocol  = 'tcp'
         elif 'ip:udp' in l[1]:
             self.protocol  = 'udp'
+        elif 'ipv6:tcp' in l[1]:
+            self.protocol = 'tcp'
         else:
             PRINT_ACTION('Skipping protocol: '+l[1], 1, action=False)
             return
@@ -560,13 +572,13 @@ class singlePacket(object):
             self.dstPort = l[10]
             self.length  = int(l[12])-8   #subtracting UDP header length
             
-        if self.srcIP == clientIP:
+        if self.srcIP in clientIP:
             self.talking    = 'c'
             self.clientPort = self.srcPort.zfill(5)
             self.serverIP   = convert_ip(self.dstIP)
             self.serverPort = self.dstPort
             self.csp        = convert_ip(self.srcIP+'.'+str(self.srcPort)) + '-' + convert_ip(self.dstIP+'.'+str(self.dstPort))
-        elif self.dstIP == clientIP:
+        elif self.dstIP in clientIP:
             self.talking    = 's'
             self.clientPort = self.dstPort.zfill(5)
             self.serverIP   = convert_ip(self.srcIP)
@@ -584,29 +596,15 @@ def isInNetworks(ip, listOfNetworks):
     ip = ipaddress.ip_address(ip)
     
     for n in listOfNetworks:
-        n = ipaddress.IPv4Network(unicode(n))
+        if ':' in n:
+            n = ipaddress.IPv6Network(unicode(n))
+        else:
+            n = ipaddress.IPv4Network(unicode(n))
         if ip in n:
             return True
         
     return False
 
-def isLocal(ip):
-    '''
-    DEPRECATED!!!
-    
-    use isPrivate() function instead
-    '''
-    ip = ip.split('.')
-
-    if ip[0] in ['10', '010']:
-        return True
-    if ip[0] == '172' and 16<=int(ip[1])<=31:
-        return True
-    if ip[0]+'.'+ip[1] == '192.168':
-        return True
-    else:
-        return False
-    
 def run(*args):
     '''##########################################################'''
     PRINT_ACTION('Reading configs and args', 0)
@@ -655,7 +653,7 @@ def run(*args):
         PRINT_ACTION('The folder is missing the client_ip file! Exiting with error!', 1, action=False, exit=True)
     else:
         PRINT_ACTION('Reading client_ip', 0)
-        client_ip = read_client_ip(client_ip_file)
+        client_ips = read_client_ips(client_ip_file)
     
     '''##########################################################'''
     PRINT_ACTION('Extracting payloads and streams', 0)
@@ -667,13 +665,13 @@ def run(*args):
     if not os.path.isdir(follow_folder_TCP):
         PRINT_ACTION('TCP Follows folder does not exist. Creating the follows folder...', 0)
         os.makedirs(follow_folder_TCP)
-        extractStreams(pcap_file, follow_folder_TCP, client_ip, 'TCP')
+        extractStreams(pcap_file, follow_folder_TCP, client_ips, 'TCP')
     
     if not os.path.isdir(follow_folder_UDP):
         PRINT_ACTION('UDP Follows folder does not exist. Creating the follows folder...', 0)
         os.makedirs(follow_folder_UDP)
-        UDPstreamsMap = mapUDPstream2csp(packetMeta, client_ip)
-        extractStreams(pcap_file, follow_folder_UDP, client_ip, 'UDP', UDPstreamsMap=UDPstreamsMap)
+        UDPstreamsMap = mapUDPstream2csp(packetMeta, client_ips)
+        extractStreams(pcap_file, follow_folder_UDP, client_ips, 'UDP', UDPstreamsMap=UDPstreamsMap)
     
     
     '''##########################################################'''
@@ -699,15 +697,17 @@ def run(*args):
     with open(packetMeta, 'r') as f:
         for line in f:
             #0-Create packet object
-            dPacket = singlePacket(line, client_ip)
+            dPacket = singlePacket(line, client_ips)
             #1-Do necessary checks and skip when necessary
                         
             #1a-Skip no-man's packets or unknown protocols
             if (dPacket.talking is None) or (dPacket.stream is None):
+                print '1a-Skip no-mans packets or unknown protocols'
                 continue
             
             #1b-Skip local flows (mostly happens for DNS)            
             if isPrivate(dPacket.srcIP) and isPrivate(dPacket.dstIP):
+                print '1b-Skip local flows (mostly happens for DNS)'
                 continue
             
             #1c-Skip no-payload packets
@@ -719,6 +719,7 @@ def run(*args):
                 continue
             elif dPacket.stream not in startedStreams[dPacket.protocol]:
                 if dPacket.talking == 's':
+                    print 'Broken Stream', dPacket.stream
                     brokenStreams[dPacket.protocol].append(dPacket.stream)
                     continue
                 else:
@@ -726,6 +727,7 @@ def run(*args):
             #2a-For TCP, append to tcpMetas
             if dPacket.protocol == 'tcp':
                 if dPacket.NXseq == -1:
+                    print 'NXseq -1'
                     continue
                 elif dPacket.stream not in tcpMetas:
                     tcpMetas[dPacket.stream] = {'c':[], 's':[]}
@@ -736,6 +738,9 @@ def run(*args):
             #Note we check len(payload)/2 because payload is in HEX
             (talking, payload) = handles[dPacket.protocol][dPacket.stream].next()
             assert(talking == dPacket.talking and len(payload)/2 == dPacket.length)
+            if not (talking == dPacket.talking and len(payload)/2 == dPacket.length): 
+                print '2b-For UDP, consistency check failed'
+                sys.exit()
             
             #3-Extract necessary info
             udpClientPorts.add(dPacket.clientPort)
@@ -804,7 +809,7 @@ def run(*args):
         ###############################
         '''
         #1- IP based filtering
-        serverIP = csp[22:37]
+        serverIP = csp[csp.index('-')+1:-6]
         
         # if serverIP in ipIgnoreList:
         if isInNetworks(serverIP, ipIgnoreList):
@@ -837,12 +842,16 @@ def run(*args):
             print '\t*******************************************\n'  
             continue
         
+        if csp in serverQ['tcp']:
+            print "Overwriting serverQ['tcp'][{}]!".format(csp)
         serverQ['tcp'][csp] = TMPserverQ
         tcpClientQ         += TMPclientQ
         
         tcpCSPs.add(csp)
         tcpServerPorts.add(csp[-5:])
 
+        if theHash in LUT['tcp']:
+            print 'Hash already in TCP LUT!!'
         LUT['tcp'][theHash] = (replay_name, csp)
         
         '''

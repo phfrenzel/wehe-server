@@ -304,12 +304,9 @@ def dir_list(dir_name, subdir, *args):
             fileList += dir_list(dirfile, subdir, *args)
     return fileList
 
-def read_client_ip(client_ip_file, follows = False):
-    if follows:
-        l = linecache.getline((client_ip_file + '/follow-stream-0.txt'), 5)
-        return (l.split()[2]).partition(':')[0]
+def read_client_ips(client_ip_file):
     f = open(client_ip_file, 'r')
-    return (f.readline()).strip()
+    return [f.readline().strip(), f.readline().strip()]
 
 def convert_ip(ip):
     '''
@@ -319,18 +316,37 @@ def convert_ip(ip):
     
     It does NOT have to have a port section
     '''
-    l     = ip.split('.')
-    l[:4] = map(lambda x : x.zfill(3), l[:4])
-    try:
-        l[4]  = l[4].zfill(5)
-    except IndexError:
-        pass
-    return '.'.join(l)
+    if ':' not in ip:
+        l     = ip.split('.')
+        l[:4] = map(lambda x : x.zfill(3), l[:4])
+        try:
+            l[4]  = l[4].zfill(5)
+        except IndexError:
+            pass
+        return '.'.join(l)
+    else:
+        ip6, _, port = ip.partition('.')
+        ip6 = ip6.split(':')
+        if '' in ip6:
+            if ip6[0] == '':
+                ip6 = ip6[1:]
+            elif ip6[-1] == '':
+                ip6 = ip6[:-1]
+            i = ip6.index('')
+            ip6[i:i+1] = ['0' for _ in range(9 - len(ip6))]
+        ip6 = map(lambda x : x.zfill(4), ip6)
+        if port != '':
+            port = '.' + port.zfill(5)
+        return ':'.join(ip6) + port
+
 
 def convert_back_ip(ip):
     '''
     does the reverse of convert_ip(ip)
     '''
+    # converted IPv6 addresses can still be parsed by the ipaddress module
+    if ':' in ip:
+        return ip
     return '.'.join( map(str, map(int, ip.split('.'))) )
 
 class IPAlias(object):
