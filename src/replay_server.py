@@ -255,14 +255,16 @@ class TCPServer(object):
         '''
         clientIP = address[0]
         clientPort = str(address[1]).zfill(5)
+
         '''
-        NEED TO REVISIT!!!!!!!!!
-        
-        For some reason, sometimes the clientIP looks weird and does not comply with either IPv4 nor IPv6 format! e.g. ::ffff:137.194.165.192
-        This will break pcap cleaning. The below if is to fix this. It MUST be done in SideChannel.handle, TCPServer.handle, and UDPServer.handle
+        Translates IPv4-mapped IPv6 addresses to IPv4 addresses.
+
+        This is necessary so that pcap cleaning works.
+        It MUST be done in SideChannel.handle, TCPServer.handle, and UDPServer.handle
         '''
         if ('.' in clientIP) and (':' in clientIP):
             clientIP = clientIP.rpartition(':')[2]
+        clientIP = canonicalize_ip(clientIP)
 
         # This is because we identify users by IP (for now)
         # So no two users behind the same NAT can run at the same time
@@ -347,7 +349,7 @@ class TCPServer(object):
             return
 
         # 1- Put the handle greenlet on greenlets_q
-        self.greenlets_q.put((gevent.getcurrent(), id, replayName, 'tcp', str(self.instance)))
+        self.greenlets_q.put((gevent.getcurrent(), [id], replayName, 'tcp', str(self.instance)))
 
         # 2- Reports the id and address (both HOST and PORT) on ports_q
         self.ports_q.put(('host', id, replayName, clientIP))
@@ -474,14 +476,14 @@ class UDPServer(object):
         clientPort = str(client_address[1]).zfill(5)
 
         '''
-        NEED TO REVISIT!!!!!!!!!
-        
-        For some reason, sometimes the clientIP looks weird and does not comply with either IPv4 nor IPv6 format! e.g. ::ffff:137.194.165.192
-        
-        This will break pcap cleaning. The below if is to fix this. It MUST be done in SideChannel.handle, TCPServer.handle, and UDPServer.handle
+        Translates IPv4-mapped IPv6 addresses to IPv4 addresses.
+
+        This is necessary so that pcap cleaning works.
+        It MUST be done in SideChannel.handle, TCPServer.handle, and UDPServer.handle
         '''
         if ('.' in clientIP) and (':' in clientIP):
             clientIP = clientIP.rpartition(':')[2]
+        clientIP = canonicalize_ip(clientIP)
 
         # This is because we identify users by IP (for now)
         # So no two users behind the same NAT can run at the same time
@@ -522,7 +524,7 @@ class UDPServer(object):
         Sends a queue of UDP packets to client socket
         '''
         # 1-Register greenlet
-        self.greenlets_q.put((gevent.getcurrent(), id, replayName, 'udp', str(self.instance)))
+        self.greenlets_q.put((gevent.getcurrent(), [id], replayName, 'udp', str(self.instance)))
         clientPort = str(client_address[1]).zfill(5)
 
         # 2-Let client know the start of new send_Q
@@ -669,15 +671,17 @@ class SideChannel(object):
         clientIP = address[0]
         # incomingTime = time.strftime('%Y-%b-%d-%H-%M-%S', time.gmtime())
         incomingTime = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+
         '''
-        NEED TO REVISIT!!!!!!!!!
-        
-        For some reason, sometimes the clientIP looks weird and does not comply with either IPv4 nor IPv6 format! e.g. ::ffff:137.194.165.192
-        
-        This will break pcap cleaning. The below if is to fix this. It MUST be done in SideChannel.handle, TCPServer.handle, and UDPServer.handle
+        Translates IPv4-mapped IPv6 addresses to IPv4 addresses.
+
+        This is necessary so that pcap cleaning works.
+        It MUST be done in SideChannel.handle, TCPServer.handle, and UDPServer.handle
         '''
         if ('.' in clientIP) and (':' in clientIP):
+            print 'IPv4 mapped address'
             clientIP = clientIP.rpartition(':')[2]
+        clientIP = canonicalize_ip(clientIP)
 
         # 1- Receive replay info: realID and replayName (id;replayName)
         data = self.receive_object(connection)
@@ -688,13 +692,15 @@ class SideChannel(object):
         # We use this instead of the IP address of the sidechannel, since the replay might be behind a proxy that changes the IP address
         try:
             [realID, testID, replayName, extraString, historyCount, endOfTest, realIP, clientVersion] = data
+            realIP = realIP.split('|')
+
             if endOfTest.lower() == 'true':
                 endOfTest = True
             else:
                 endOfTest = False
         except ValueError:
             [realID, testID, replayName, extraString, historyCount, endOfTest] = data
-            realIP = clientIP
+            realIP = [clientIP]
             clientVersion = '1.0'
 
         # Fix cases where the replayName are not in correct format
@@ -723,14 +729,14 @@ class SideChannel(object):
             [clientIP, realID, replayName, testID, extraString, historyCount, str(endOfTest)]), indent=1, action=False,
                    newLine=True)
         # If IP sent from client is different than the one we get from sidechannel, there might be a proxy, use the client
-        if realIP == clientIP or realIP == '127.0.0.1':
-            id = clientIP
+        if clientIP not in realIP or realIP == '127.0.0.1':
+            ids = [clientIP]
         else:
-            id = realIP
+            ids = realIP
         # ClientObj should know whether there is change needed to make on this connection
-        dClient = ClientObj(incomingTime, realID, id, clientIP, replayName, testID, historyCount, extraString,
+        dClient = ClientObj(incomingTime, realID, ids[0], clientIP, replayName, testID, historyCount, extraString,
                             connection, clientVersion, smpacNum, saction, sspec)
-        dClient.hosts.add(id)
+        dClient.hosts.union(ids)
 
         # 2a- if a sideChannel with same realID is pending, kill it!
         # No two clients with the same IP can replay at the same time, the first replay has to be killed
@@ -777,41 +783,45 @@ class SideChannel(object):
         if testID:
 
             try:
-                old_id = self.inProgress[realID]
-                del self.admissionCtrl[old_id]
-                del self.inProgress[realID]
+                old_ids = self.inProgress[realID]
+                for oid in old_ids:
+                    self.admissionCtrl.pop(oid, None)
+                self.inProgress.pop(realID, None)
                 self.killIfNeeded(realID)
             except KeyError:
                 pass
 
             try:
-                testObj = self.admissionCtrl[id]
+                testObj = self.admissionCtrl[ids[0]] # TODO
             except KeyError:
                 testObj = None
 
             if testObj is not None:
                 if not testObj.isAlive():
                     self.killIfNeeded(testObj.realID)
-                    self.admissionCtrl[id] = TestObject(clientIP, realID, replayName, testID)
-                    self.inProgress[realID] = id
+                    testObject = TestObject(clientIP, realID, replayName, testID)
+                    for id in ids:
+                        self.admissionCtrl[id] = testObject
+                    self.inProgress[realID] = ids
                     good2go = True
                 else:
                     good2go = False
             else:
                 good2go = True
-                self.inProgress[realID] = id
+                self.inProgress[realID] = ids
                 testObj = TestObject(clientIP, realID, replayName, testID)
 
-                try:
-                    self.admissionCtrl[id] = testObj
-                except KeyError:
-                    self.admissionCtrl[id] = {}
-                    self.admissionCtrl[id] = testObj
+                for id in ids:
+                    try:
+                        self.admissionCtrl[id] = testObj
+                    except KeyError:
+                        self.admissionCtrl[id] = {}
+                        self.admissionCtrl[id] = testObj
 
         else:
             try:
-                old_id = self.inProgress[realID]
-                testObj = self.admissionCtrl[old_id]
+                old_ids = self.inProgress[realID]
+                testObj = self.admissionCtrl[old_ids[0]]
                 good2go = True
                 testObj.update(testID)
             except KeyError:
@@ -822,17 +832,20 @@ class SideChannel(object):
                        'Yay! Permission granted: {} - {} - {} - {}'.format(clientIP, realID, historyCount, testID),
                        indent=2, action=False)
             dClient.setDump('_'.join(['server', realID, replayName, extraString, historyCount, testID]))
-            try:
-                self.all_clients[id][replayName] = dClient
-            except KeyError:
-                self.all_clients[id] = {}
-                self.all_clients[id][replayName] = dClient
 
-            self.all_side_conns[g] = (id, replayName)
+            for id in ids:
+                try:
+                    print 'Adding ip: ' + id
+                    self.all_clients[id][replayName] = dClient
+                except KeyError:
+                    self.all_clients[id] = {}
+                    self.all_clients[id][replayName] = dClient
+
+            self.all_side_conns[g] = (ids, replayName)
             self.id2g[realID] = g
 
             g.link(self.side_channel_callback)
-            self.greenlets_q.put((g, id, replayName, 'sc', None))
+            self.greenlets_q.put((g, ids, replayName, 'sc', None))
             LOG_ACTION(logger,
                        'Notifying user know about granted permission: {} - {} - {}'.format(clientIP, realID, testID),
                        indent=2, action=False)
@@ -844,7 +857,7 @@ class SideChannel(object):
                        action=False)
         else:
             try:
-                testOnFile = self.admissionCtrl[id]
+                testOnFile = self.admissionCtrl[ids[0]]
                 LOG_ACTION(logger,
                            '*** NoPermission. You: {} - {} - {}, OnFile: {} - {} - {} ***'.format(clientIP, realID,
                                                                                                   testID, testOnFile.ip,
@@ -999,10 +1012,11 @@ class SideChannel(object):
 
         if endOfTest or (testID == '1'):
             LOG_ACTION(logger, 'Cleaning inProgress and admissionCtrl for: ' + realID, indent=2, action=False)
-            id = self.inProgress[realID]
-            del self.admissionCtrl[id]
+            ids = self.inProgress[realID]
+            for id in ids:
+                del self.admissionCtrl[id]
             del self.inProgress[realID]
-        
+
         REPLAY_COUNT.labels(replayName).inc()
 
         # 9- Set secondarySuccess to True and close connection
@@ -1130,8 +1144,8 @@ class SideChannel(object):
 
         # Locate client object
         g = args[0]
-        (id, replayName) = self.all_side_conns[g]
-        dClient = self.all_clients[id][replayName]
+        (ids, replayName) = self.all_side_conns[g]
+        dClient = self.all_clients[ids[0]][replayName]
 
         LOG_ACTION(logger, 'side_channel_callback for: {} ({}). Success: {}, Client time: {}, historyCount: {}'.format(
             dClient.realID,
@@ -1153,19 +1167,21 @@ class SideChannel(object):
             pass
 
         # schedule greenlet to be removed
-        self.greenlets_q.put((None, id, replayName, 'remove', None))
+        self.greenlets_q.put((None, ids, replayName, 'remove', None))
 
         # Clean UDP mappings (populated in UDPserver.handle)
         for mapping in self.mappings:
             for port in dClient.ports:
-                try:
-                    del mapping[id][port]
-                except KeyError:
-                    pass
+                for id in ids:
+                    try:
+                        del mapping[id][port]
+                    except KeyError:
+                        pass
 
         # Clean dicts
         # print '\r\n CLEANING DICTS', self.all_clients[id][replayName], self.all_side_conns[g], self.id2g[ dClient.realID ]
-        del self.all_clients[id][replayName]
+        for id in ids:
+            del self.all_clients[id][replayName]
         del self.all_side_conns[g]
         del self.id2g[dClient.realID]
         # del self.all_clients[id]
@@ -1236,33 +1252,37 @@ class SideChannel(object):
         are garbage collected periodically using greenlet_cleaner() 
         '''
         while True:
-            (g, clientIP, replayName, who, instance) = self.greenlets_q.get()
+            (g, clientIPs, replayName, who, instance) = self.greenlets_q.get()
 
             # SideChannel asking to add greenlet
             if who == 'sc':
-                try:
-                    self.greenlets[clientIP][replayName] = {g: time.time()}
-                except KeyError:
-                    self.greenlets[clientIP] = {}
-                    self.greenlets[clientIP][replayName] = {g: time.time()}
+                t = time.time()
+                for ip in clientIPs:
+                    try:
+                        self.greenlets[ip][replayName] = {g: t}
+                    except KeyError:
+                        self.greenlets[ip] = {}
+                        self.greenlets[ip][replayName] = {g: t}
 
             # side_channel_callback asking to remove greenlet
             elif who == 'remove':
-                LOG_ACTION(logger, 'Cleaning greenlets for: ' + clientIP, action=False, indent=2)
+                LOG_ACTION(logger, 'Cleaning greenlets for: ' + ', '.join(clientIPs), action=False, indent=2)
                 try:
-                    for x in self.greenlets[clientIP][replayName]:
+                    for x in self.greenlets[clientIPs[0]][replayName]:
                         x.kill(block=False)
-                    del self.greenlets[clientIP][replayName]
+                    for ip in clientIPs:
+                        self.greenlets[ip].pop(replayName, None)
                 except KeyError:
                     pass
 
             # TCP/UDP servers asking to add greenlet
             else:
-                try:
-                    self.greenlets[clientIP][replayName][g] = time.time()
-                except KeyError:
-                    g.kill(block=False)
-                    self.errorlog_q.put((clientIP, replayName, 'Unknown connection', who.upper(), instance))
+                for ip in clientIPs:
+                    try:
+                        self.greenlets[ip][replayName][g] = time.time()
+                    except KeyError:
+                        g.kill(block=False)
+                        self.errorlog_q.put((ip, replayName, 'Unknown connection', who.upper(), instance))
 
     def greenlet_cleaner(self):
         '''
@@ -1295,6 +1315,7 @@ class SideChannel(object):
             (command, id, replayName, port_or_host) = self.ports_q.get()
 
             try:
+
                 dClient = self.all_clients[id][replayName]
             except:
                 LOG_ACTION(logger, 'portCollector cannot find client: ' + id, level='EXCEPTION', doPrint=False)
@@ -1520,7 +1541,7 @@ def merge_servers(Q):
 
     for csp in Q:
         originalServerPort = csp[-5:]
-        originalClientPort = csp[16:21]
+        originalClientPort = csp[csp.index('-')-5:csp.index('-')]
 
         if originalServerPort not in newQ:
             newQ[originalServerPort] = {}
@@ -1845,6 +1866,20 @@ def run(*args):
     LOG_ACTION(logger, 'Running the side channel')
     start_http_server(9090)
     side_channel.run(server_mapping, mappings)
+
+def canonicalize_ip(ip):
+    if ':' not in ip:
+        return ip
+
+    ip = ip.split(':')
+    if '' in ip:
+        if ip[0] == '':
+            ip = ip[1:]
+        elif ip[-1] == '':
+            ip = ip[:-1]
+        i = ip.index('')
+        ip[i:i+1] = ['0' for _ in range(9 - len(ip))]
+    return ':'.join(ip)
 
 
 def main():
