@@ -638,15 +638,16 @@ class tcpdump(object):
 
         self.dump_name = targetFolder + self.dump_name
 
-    def start(self, host = None):
+    def start(self, hosts = None):
 
         command = ['tcpdump', '-w', self.dump_name]
 
         if self._interface is not None:
             command += ['-i', self._interface]
 
-        if host is not None:
-            command += ['host', host]
+        if hosts is not None:
+            h = ' or '.join(hosts)
+            command += ['host', h]
         try:
             self._p       = gevent.subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except NameError:

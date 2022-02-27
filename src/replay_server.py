@@ -115,13 +115,13 @@ class ClientObj(object):
     A simple object to store client's info
     '''
 
-    def __init__(self, incomingTime, realID, id, ip, replayName, testID, historyCount, extraString, connection,
+    def __init__(self, incomingTime, realID, ids, ips, replayName, testID, historyCount, extraString, connection,
                  clientVersion,
                  smpacNum, saction, sspec):
-        self.id = id
+        self.ids = ids
         self.replayName = replayName
         self.connection = connection
-        self.ip = id
+        self.ips = ids
         self.realID = realID
         self.testID = testID
         self.incomingTime = incomingTime
@@ -169,26 +169,17 @@ class ClientObj(object):
         self.dump = tcpdump(dump_name=dumpName, targetFolder=self.tcpdumpsFolder)
 
     def create_info_json(self, infoFile):
-        # To protect user privacy
-        # anonymize client by modifying the ip to only first three octets, e.g., v4: 1.2.3.4 -> 1.2.3.0,
-        # v6 : 1:2:3:4:5:6 -> 1:2:3:4:5:0000
-        if '.' in self.id:
-            v4ExceptLast = self.id.rsplit('.', 1)[0]
-            anonymizedIP = v4ExceptLast + '.0'
-        else:
-            v6ExceptLast = self.id.rsplit(':', 1)[0]
-            anonymizedIP = v6ExceptLast + ':0000'
         # The 16th element is used to indicate whether the user has alerted ARCEP, False by default,
         # changed to true by the analyzer when the client alerts
         # The 17th element is the client app verison
-        return json.dump([self.incomingTime, self.realID, anonymizedIP, anonymizedIP, self.replayName, self.extraString,
+        return json.dump([self.incomingTime, self.realID, self.ids, self.ips, self.replayName, self.extraString,
                           self.historyCount, self.testID,
                           self.exceptions, self.success, self.secondarySuccess, self.iperfRate,
                           time.time() - self.startTime, self.clientTime, self.mobileStats, False, self.clientVersion],
                          open(infoFile, 'w'))
 
     def get_info(self):
-        return map(str, [self.incomingTime, self.realID, self.id, self.ip, self.replayName, self.extraString,
+        return map(str, [self.incomingTime, self.realID, self.ids, self.ips, self.replayName, self.extraString,
                          self.historyCount, self.testID, self.exceptions, self.success, self.secondarySuccess,
                          self.iperfRate, time.time() - self.startTime, self.clientTime, self.mobileStats])
 
@@ -693,6 +684,7 @@ class SideChannel(object):
         try:
             [realID, testID, replayName, extraString, historyCount, endOfTest, realIP, clientVersion] = data
             realIP = realIP.split('|')
+            realIP = [e for e in realIP if len(e) != 0]
 
             if endOfTest.lower() == 'true':
                 endOfTest = True
@@ -734,7 +726,7 @@ class SideChannel(object):
         else:
             ids = realIP
         # ClientObj should know whether there is change needed to make on this connection
-        dClient = ClientObj(incomingTime, realID, ids[0], clientIP, replayName, testID, historyCount, extraString,
+        dClient = ClientObj(incomingTime, realID, ids, clientIP, replayName, testID, historyCount, extraString,
                             connection, clientVersion, smpacNum, saction, sspec)
         dClient.hosts.union(ids)
 
@@ -928,7 +920,7 @@ class SideChannel(object):
         resultsFolder = Configs().get('resultsFolder')
 
         # print '\r\n STARTING TCPDUMP FOR THIS CLIENT'
-        command = dClient.dump.start(host=dClient.ip)
+        command = dClient.dump.start(hosts=dClient.ips)
 
         # 5a- Send server mapping to client
         send_result = self.send_object(connection, self.server_mapping_json)
