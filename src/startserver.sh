@@ -15,14 +15,6 @@ python certGenerator.py \
    --root_cert=/wehe/ssl/ca.crt \
    --root_pass=$root_pass
 
-# Now start two servers.
-# The replay analyzer
-python replay_analyzerServer.py \
-  --ConfigFile=configs.cfg \
-  --original_ports=True \
-  --certs-folders=/wehe/ssl/ \
-  &
-
 # The replay server
 python replay_server.py \
   --ConfigFile=configs.cfg \
