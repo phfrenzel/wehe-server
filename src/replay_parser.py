@@ -62,7 +62,7 @@ from python_lib import *
 
 DEBUG = 2
 
-ipIgnoreList = ['17.0.0.0/8']   #Apple ip range --> see it a lot when recording on iPhone/iPad
+ipIgnoreList = []
 
 def getUDPstreamsMap(pcap_file, client_ips):
     command = 'tshark -r ' + pcap_file + " -2 -R 'udp && not icmp && not ntp' -T fields -e ip.src -e ipv6.src -e udp.srcport -e ip.dst -e ipv6.dst -e udp.dstport > tmp"
