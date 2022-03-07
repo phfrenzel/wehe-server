@@ -59,6 +59,7 @@ import sys, os, pickle, copy, mimetools, StringIO, email, re, random, string, ha
 import ipaddress
 import python_lib
 from python_lib import *
+from collections import OrderedDict
 
 DEBUG = 2
 
@@ -887,12 +888,15 @@ def run(*args):
 #     pickle.dump((udpClientQ, udpClientPorts, {}, replay_name)        , open((pcap_file+'_client_udp.pickle'), "w" ), 2)
 #     pickle.dump((serverQ['udp'], LUT['udp'], udpServers, replay_name), open((pcap_file+'_server_udp.pickle'), "w" ), 2)
 #     json.dump((udpClientQ, udpClientPorts, {}, replay_name)          , open((pcap_file+'_client_udp.json'), "w"), cls=TCP_UDPjsonEncoder)
+
+    client_csp_order = {}
+    client_csp_order['tcp'] = list(OrderedDict.fromkeys([rs.c_s_pair for rs in clientQ if isinstance(rs, RequestSet)]))
+    client_csp_order['udp'] = list(OrderedDict.fromkeys([rs.c_s_pair for rs in clientQ if isinstance(rs, UDPset)]))
     
     PRINT_ACTION('Serializing all', 1, action=False)
     pickle.dump(streamSkippedList, open((configs.get('pcap_folder')+'/streamSkippedList.pickle'), "w" ), 2)
-    pickle.dump((clientQ, udpClientPorts, list(tcpCSPs), replay_name)          , open((pcap_file+'_client_all.pickle'), "w" ), 2)
-    pickle.dump((serverQ, LUT, getLUT, udpServers, tcpServerPorts, replay_name), open((pcap_file+'_server_all.pickle'), "w" ), 2)
-    json.dump((clientQ, udpClientPorts, list(tcpCSPs), replay_name)            , open((pcap_file+'_client_all.json'), "w"), cls=TCP_UDPjsonEncoder)
+    pickle.dump((serverQ, LUT, getLUT, udpServers, tcpServerPorts, replay_name, client_csp_order), open((pcap_file+'_server_all.pickle'), "w" ), 2)
+    json.dump((clientQ, udpClientPorts, list(tcpCSPs), replay_name, len(client_csp_order['udp'])), open((pcap_file+'_client_all.json'), "w"), cls=TCP_UDPjsonEncoder)
 
     PRINT_ACTION('Stats:', 0, action=True)
     serverSideCount = {}

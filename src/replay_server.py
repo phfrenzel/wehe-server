@@ -146,6 +146,7 @@ class ClientObj(object):
         self.smpacNum = smpacNum
         self.saction = saction
         self.sspec = sspec
+        self.next_stream = {'tcp': {}, 'udp': {}}
 
         if not os.path.exists(self.targetFolder):
             os.makedirs(self.targetFolder)
@@ -185,7 +186,7 @@ class ClientObj(object):
 
 
 class TCPServer(object):
-    def __init__(self, instance, Qs, greenlets_q, ports_q, errorlog_q, LUT, getLUT, sideChannel_all_clients,
+    def __init__(self, instance, Qs, greenlets_q, ports_q, errorlog_q, LUT, getLUT, sideChannel_all_clients, csp_qs,
                  buff_size=4096, pool_size=10000, hashSampleSize=400, timing=True):
         self.instance = instance
         self.Qs = Qs
@@ -199,6 +200,14 @@ class TCPServer(object):
         self.hashSampleSize = hashSampleSize
         self.all_clients = sideChannel_all_clients
         self.timing = timing
+        self.csp_order = {}
+        self.ip4_csp_order = {}
+
+        for replay_name in csp_qs:
+            self.csp_order[replay_name] = [ csp for csp in csp_qs[replay_name] if int(csp.split('-')[1].split('.')[-1]) == self.instance[1]]
+
+        for replay_name in csp_qs:
+            self.ip4_csp_order[replay_name] = [csp for csp in self.csp_order[replay_name] if ':' not in csp]
 
     def run(self):
         '''
@@ -293,8 +302,19 @@ class TCPServer(object):
                 # (replayName, csp) = self.LUT['tcp'][hash(new_data_4hash)]
                 # all_clients[id]'s only key is the replayName for this client
                 replayName = self.all_clients[id].keys()[0]
+                client = self.all_clients[id][replayName]
+
+                if len(client.ids) == 1:
+                    csp_order = self.ip4_csp_order[replayName]
+                else:
+                    csp_order = self.csp_order[replayName]
+
+                if self.instance[1] not in client.next_stream['tcp']:
+                    client.next_stream['tcp'][self.instance[1]] = 0
+
                 # Since only one connection for each replay, the first (only) csp in the Q is the one
-                csp = self.Qs[replayName].keys()[0]
+                csp = csp_order[client.next_stream['tcp'][self.instance[1]]]
+                client.next_stream['tcp'][self.instance[1]] += 1
                 exceptionsReport = ''
             # The following exception handler is for checking header manipulations
             except KeyError:
@@ -427,7 +447,7 @@ class UDPServer(object):
                   cleans them whenever client disconnects
     '''
 
-    def __init__(self, instance, Qs, notify_q, greenlets_q, ports_q, errorlog_q, LUT, sideChannel_all_clients,
+    def __init__(self, instance, Qs, notify_q, greenlets_q, ports_q, errorlog_q, LUT, sideChannel_all_clients, csp_qs,
                  buff_size=4096, pool_size=10000, timing=True):
         self.instance = instance
         self.Qs = Qs
@@ -443,6 +463,14 @@ class UDPServer(object):
         self.mapping = {}  # self.mapping[id][clientPort] = (id, serverPort, replayName)
         self.send_lock = RLock()
         self.timing = timing
+        self.csp_order = {}
+        self.ip4_csp_order = {}
+
+        for replay_name in csp_qs:
+            self.csp_order[replay_name] = [ csp for csp in csp_qs[replay_name] if int(csp.split('-')[1].split('.')[-1]) == self.instance[1]]
+
+        for replay_name in csp_qs:
+            self.ip4_csp_order[replay_name] = [csp for csp in self.csp_order[replay_name] if ':' not in csp]
 
     def run(self):
 
@@ -496,8 +524,19 @@ class UDPServer(object):
                     return
 
                 else:
-                    original_serverPort = self.Qs[replayName].keys()[0]
-                    original_clientPort = self.Qs[replayName][original_serverPort].keys()[0]
+                    client = self.all_clients[id][replayName]
+
+                    if len(client.ids) == 1:
+                        csp_order = self.ip4_csp_order[replayName]
+                    else:
+                        csp_order = self.csp_order[replayName]
+
+                    if self.instance[1] not in client.next_stream['udp']:
+                        client.next_stream['udp'][self.instance[1]] = 0
+
+                    original_serverPort = str(self.instance[1]).zfill(5)
+                    original_clientPort = csp_order[client.next_stream['udp'][self.instance[1]]].split('-')[0].split('.')[-1]
+                    client.next_stream['udp'][self.instance[1]] += 1
             except:
                 self.errorlog_q.put((id, 'Unknown packet', 'UDP', str(self.instance)))
                 return
@@ -1559,6 +1598,7 @@ def load_Qs(serialize='pickle'):
           So we need to decode them before starting the replay.
     '''
     Qs = {'tcp': {}, 'udp': {}}
+    csp_qs = {'tcp': {}, 'udp': {}}
     folders = []
     allUDPservers = {}
     udpSenderCounts = {}
@@ -1586,13 +1626,16 @@ def load_Qs(serialize='pickle'):
                 break
 
         if serialize == 'pickle':
-            Q, tmpLUT, tmpgetLUT, udpServers, tcpServerPorts, replayName = pickle.load(open(pickle_file, 'r'))
+            Q, tmpLUT, tmpgetLUT, udpServers, tcpServerPorts, replayName, csp_order = pickle.load(open(pickle_file, 'r'))
 
         elif serialize == 'json':
             print '\n\nJSON NOT SUPPORTED YET!\n\n'
             sys.exit(-1)
 
         LOG_ACTION(logger, 'Loading for: ' + replayName, indent=1, action=False)
+
+        csp_qs['tcp'][replayName] = csp_order['tcp']
+        csp_qs['udp'][replayName] = csp_order['udp']
 
         # Decode all payloads
         for csp in Q['udp']:
@@ -1674,7 +1717,7 @@ def load_Qs(serialize='pickle'):
 
     print c, len(finalgetLUT)
 
-    return Qs, finalLUT, finalgetLUT, allUDPservers, udpSenderCounts, tcpIPs, tcpPorts, allIPs
+    return Qs, finalLUT, finalgetLUT, allUDPservers, udpSenderCounts, tcpIPs, tcpPorts, allIPs, csp_qs
 
 
 def atExit(aliases, iperf):
@@ -1761,7 +1804,7 @@ def run(*args):
         iperf = None
 
     LOG_ACTION(logger, 'Loading server queues')
-    Qs, LUT, getLUT, udpServers, udpSenderCounts, tcpIPs, tcpPorts, allIPs = load_Qs(serialize=configs.get('serialize'))
+    Qs, LUT, getLUT, udpServers, udpSenderCounts, tcpIPs, tcpPorts, allIPs, csp_qs = load_Qs(serialize=configs.get('serialize'))
 
     LOG_ACTION(logger, 'IP aliasing')
     alias_c = 1
@@ -1793,7 +1836,7 @@ def run(*args):
 
             if configs.get('original_ips'):
                 server = UDPServer((ip, serverPort), Qs['udp'], notify_q, greenlets_q, ports_q, errorlog_q, LUT,
-                                   side_channel.all_clients, timing=configs.get('timing'))
+                                   side_channel.all_clients, csp_qs['udp'], timing=configs.get('timing'))
                 server.run()
                 LOG_ACTION(logger, ' '.join(
                     [str(count), 'Created socket server for', str((ip, port)), '@', str(server.instance)]),
@@ -1802,7 +1845,7 @@ def run(*args):
                 count += 1
             elif port not in ports_done:
                 server = UDPServer((configs.get('publicIP'), serverPort), Qs['udp'], notify_q, greenlets_q, ports_q,
-                                   errorlog_q, LUT, side_channel.all_clients, timing=configs.get('timing'))
+                                   errorlog_q, LUT, side_channel.all_clients, csp_qs['udp'], timing=configs.get('timing'))
                 server.run()
                 ports_done[port] = server
                 LOG_ACTION(logger, ' '.join(
@@ -1833,7 +1876,7 @@ def run(*args):
 
             if configs.get('original_ips'):
                 server = TCPServer((ip, serverPort), Qs['tcp'], greenlets_q, ports_q, errorlog_q, LUT, getLUT,
-                                   side_channel.all_clients, timing=configs.get('timing'))
+                                   side_channel.all_clients, csp_qs['tcp'], timing=configs.get('timing'))
                 server.run()
                 LOG_ACTION(logger, ' '.join(
                     [str(count), 'Created socket server for', str((ip, port)), '@', str(server.instance)]),
@@ -1841,7 +1884,7 @@ def run(*args):
                 count += 1
             elif port not in ports_done:
                 server = TCPServer((configs.get('publicIP'), serverPort), Qs['tcp'], greenlets_q, ports_q, errorlog_q,
-                                   LUT, getLUT, side_channel.all_clients, timing=configs.get('timing'))
+                                   LUT, getLUT, side_channel.all_clients, csp_qs['tcp'], timing=configs.get('timing'))
                 server.run()
                 ports_done[port] = server
                 LOG_ACTION(logger, ' '.join(
