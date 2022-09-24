@@ -18,3 +18,9 @@
 ../replayTraces/whatsapp_misc.pcap
 ../replayTraces/whatsapp_outgoing_call_1.pcap
 ../replayTraces/whatsapp_outgoing_video_1.pcap
+../replayTraces/fm4web_live_1_android.pcap
+../replayTraces/fm4web_misc_1_android.pcap
+../replayTraces/messenger_chat_1.pcap
+../replayTraces/messenger_misc_1.pcap
+../replayTraces/messenger_chat_1_android.pcap
+../replayTraces/messenger_misc_1_android.pcap
