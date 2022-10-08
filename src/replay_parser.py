@@ -64,6 +64,7 @@ from collections import OrderedDict
 DEBUG = 2
 
 ipIgnoreList = []
+replacement_address = "8.8.8.8"
 
 def getUDPstreamsMap(pcap_file, client_ips):
     command = 'tshark -r ' + pcap_file + " -2 -R 'udp && not icmp && not ntp' -T fields -e ip.src -e ipv6.src -e udp.srcport -e ip.dst -e ipv6.dst -e udp.dstport > tmp"
@@ -77,16 +78,33 @@ def getUDPstreamsMap(pcap_file, client_ips):
                 print 'getUDPstreamsMap continuing because len != 4'
                 continue
 
+            if Configs().get('convert_to_ipv4'):
+                ip4_client_ip = list(filter(lambda x: ':' not in x, client_ips))[0]
             if l[0] in client_ips:
-                p1 = ':'.join(l[:2])
-                p2 = ':'.join(l[2:])
+                if Configs().get('convert_to_ipv4') and ':' in l[0]:
+                    p1 = ip4_client_ip + ':' + l[1]
+                    p2 = replacement_address + ':' + l[3]
+                    orig_p1 = '['+l[0]+']:'+l[1]
+                    orig_p2 = '['+l[2]+']:'+l[3]
+                else:
+                    p1 = ':'.join(l[:2])
+                    p2 = ':'.join(l[2:])
             elif l[2] in client_ips:
-                p1 = ':'.join(l[2:])
-                p2 = ':'.join(l[:2])
+                if Configs().get('convert_to_ipv4') and ':' in l[0]:
+                    p1 = ip4_client_ip + ':' + l[3]
+                    p2 = replacement_address + ':' + l[1]
+                    orig_p1 = '['+l[2]+']:'+l[3]
+                    orig_p2 = '['+l[0]+']:'+l[1]
+                else:
+                    p1 = ':'.join(l[2:])
+                    p2 = ':'.join(l[:2])
             else:
                 print 'getUDPstreamsMap: skipping packet not sent from/to client', l[0], l[2]
                 continue    
-            streams.add(p1+'-'+p2)
+            if Configs().get('convert_to_ipv4') and ':' in l[0]:
+                streams.add(p1+'-'+p2+'#'+orig_p1+'-'+orig_p2)
+            else:
+                streams.add(p1+'-'+p2)
     os.system('rm tmp')
     return streams
 
@@ -110,7 +128,7 @@ def mapUDPstream2csp(packetMeta, clientIP):
     with open(packetMeta, 'r') as f:
         for l in f:
             l = l.strip().split('\t')
-            if 'ip:udp' not in l[1]:
+            if 'ip:udp' not in l[1] and 'ipv6:udp' not in l[1]:
                 continue
             else:
                 streamNo = l[4]
@@ -121,6 +139,9 @@ def mapUDPstream2csp(packetMeta, clientIP):
                 if srcIP not in clientIP:
                     continue
                 else:
+                    if Configs().get('convert_to_ipv4') and ':' in srcIP:
+                        srcIP = list(filter(lambda x: ':' not in x, clientIP))[0]
+                        dstIP = replacement_address
                     csp = convert_ip(srcIP+'.'+srcPort) + '-' + convert_ip(dstIP+'.'+dstPort)
                     if csp in streams:
                         assert(streams[csp] == streamNo)
@@ -157,6 +178,11 @@ def extractStreams(pcap_file, follow_folder, client_ips, protocol, UDPstreamsMap
     elif protocol == 'udp':
         streams = getUDPstreamsMap(pcap_file, client_ips)
         for s in streams:
+            if Configs().get('convert_to_ipv4'):
+                ipv6 = False
+                if '#' in s:
+                    ipv6 = True
+                    s, orig = s.split('#')
             client = s.split('-')[0]
             # replaces the last occurrence of ':' with '.'
             client = '.'.join(client.rsplit(':', 1))
@@ -172,6 +198,8 @@ def extractStreams(pcap_file, follow_folder, client_ips, protocol, UDPstreamsMap
             filename = UDPstreamsMap[csp]
             print '\tDoing UDP stream:', filename
             
+            if Configs().get('convert_to_ipv4') and ipv6:
+                s = orig
             command = "tshark -r " + pcap_file + " -qz follow," + protocol + ",raw,"+ s.replace('-', ',') + ' > ' + follow_folder + '/follow-stream-' + filename +'.txt'
             os.system(command)
 
@@ -542,6 +570,16 @@ class singlePacket(object):
         self.timestamp = float(l[2])
         self.srcIP     = l[5] or l[15]
         self.dstIP     = l[8] or l[16]
+
+        if Configs().get('convert_to_ipv4') and ':' in self.srcIP:
+            cip = list(filter(lambda x: ':' not in x, clientIP))[0]
+            if self.srcIP in clientIP:
+                self.srcIP = cip
+                self.dstIP = replacement_address
+            elif self.dstIP in clientIP:
+                self.srcIP = replacement_address
+                self.dstIP = cip
+
         self.payload   = None
         self.talking   = None
         self.stream    = None
@@ -552,6 +590,8 @@ class singlePacket(object):
             self.protocol  = 'udp'
         elif 'ipv6:tcp' in l[1]:
             self.protocol = 'tcp'
+        elif 'ipv6:udp' in l[1]:
+            self.protocol = 'udp'
         else:
             PRINT_ACTION('Skipping protocol: '+l[1], 1, action=False)
             return
@@ -613,6 +653,7 @@ def run(*args):
     configs.set('randomPayload', False)
     configs.set('pureRandom'   , False)
     configs.set('invertBit'   , False)
+    configs.set('convert_to_ipv4', False)
     configs.read_args(sys.argv)
     
     configs.check_for(['pcap_folder'])
