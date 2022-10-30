@@ -49,7 +49,9 @@ recordings are at least 1MB in size — e.g. with Snapchat we recorded a session
 Spotlight feature (`snapchat_spotlight_1.mp4`).
 
 These recorded pcaps can be found in the `pcaps/` directory. This directory also contains screen
-captures showing how the applications were used while recording the pcaps.
+captures showing how the applications were used while recording the pcaps. **NOTE**: Most recordings
+were made on iOS; the few Android recordings are labelled accordingly and contain `android` in their
+file names.
 
 Running our tests involves installing the modified client on MobileAtlas probes in different
 countries and running replays of applications included in a zero-rating offer against the modified
