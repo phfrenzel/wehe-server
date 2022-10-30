@@ -272,9 +272,6 @@ def createHashLUT(clientQ, replay_name, numberOfHashed=5):
             the_hash = hashlib.sha1(udp.payload.decode('hex')).hexdigest()
             # the_hash = hash(udp.payload.decode('hex'))
             
-            if the_hash in LUT:
-                print 'PLEASE INVESTIGATE MANUALLY: DUP!:', udp.c_s_pair
-
             LUT[the_hash] = (replay_name, udp.c_s_pair)
             seenCSP[udp.c_s_pair] += 1
         
@@ -872,18 +869,6 @@ def run(*args):
         # theHash = hash(toHash)
         theHash = hashlib.sha1(toHash).hexdigest()
         
-        if theHash in LUT['tcp']:
-            streamSkippedList.append(stream)
-            print '\n\t*******************************************'
-            print '\t*******************************************'
-            print '\tATTENTION: take a look!!!'
-            print '\tDUP in tcp LUT:', theHash, '\t', (replay_name, csp), '\n'
-            print '\t', toHash
-            print '\tSKIPPING!!!'
-            print '\t*******************************************'
-            print '\t*******************************************\n'  
-            continue
-        
         if csp in serverQ['tcp']:
             print "Overwriting serverQ['tcp'][{}]!".format(csp)
         serverQ['tcp'][csp] = TMPserverQ
@@ -892,8 +877,6 @@ def run(*args):
         tcpCSPs.add(csp)
         tcpServerPorts.add(csp[-5:])
 
-        if theHash in LUT['tcp']:
-            print 'Hash already in TCP LUT!!'
         LUT['tcp'][theHash] = (replay_name, csp)
         
         '''
